@@ -1,9 +1,10 @@
 #include <fstream>
 #include <algorithm>
 #include <cmath>
-
 #include <time.h>
 
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>
 #include <rapidjson/document.h>
 
 #include "misc.h"
@@ -325,8 +326,6 @@ void explodeSSAndroid(std::string ss, bool libev, std::string custom_port, int l
 {
     Document json;
     nodeInfo node;
-    std::string ps, password, method, server, port, group = SS_DEFAULT_GROUP;
-    std::string plugin, pluginopts;
     int index = nodes.size();
     //first add some extra data before parsing
     ss = "{\"nodes\":" + ss + "}";
@@ -336,6 +335,9 @@ void explodeSSAndroid(std::string ss, bool libev, std::string custom_port, int l
 
     for(unsigned int i = 0; i < json["nodes"].Size(); i++)
     {
+        std::string ps, password, method, server, port, group = SS_DEFAULT_GROUP;
+        std::string plugin, pluginopts;
+
         server = GetMember(json["nodes"][i], "server");
         if(server.empty())
             continue;
@@ -556,6 +558,8 @@ void explodeSocks(std::string link, std::string custom_port, nodeInfo &node)
         }
         link = urlsafe_base64_decode(link.substr(8));
         arguments = split(link, ":");
+        if(arguments.size() < 2)
+            return;
         server = arguments[0];
         port = arguments[1];
     }
@@ -608,8 +612,11 @@ void explodeQuan(std::string quan, std::string custom_port, int local_port, node
     std::vector<std::string> configs, vArray;
     strTemp = regReplace(quan, "(.*?) = (.*)", "$1,$2");
     configs = split(strTemp, ",");
+
     if(configs[1] == "vmess")
     {
+        if(configs.size() < 6)
+            return;
         ps = trim(configs[0]);
         add = trim(configs[2]);
         port = custom_port.size() ? custom_port : trim(configs[3]);
@@ -738,14 +745,15 @@ void explodeClash(Node yamlnode, std::string custom_port, int local_port, std::v
     nodeInfo node;
     Node singleproxy;
     unsigned int index = nodes.size();
-    std::string proxytype, ps, server, port, cipher, group, password; //common
-    std::string type = "none", id, aid = "0", net = "tcp", path, host, edge, tls; //vmess
-    std::string plugin, pluginopts, pluginopts_mode, pluginopts_host, pluginopts_mux; //ss
-    std::string protocol, protoparam, obfs, obfsparam; //ssr
-    std::string user; //socks
     const std::string section = yamlnode["proxies"].IsDefined() ? "proxies" : "Proxy";
     for(unsigned int i = 0; i < yamlnode[section].size(); i++)
     {
+        std::string proxytype, ps, server, port, cipher, group, password; //common
+        std::string type = "none", id, aid = "0", net = "tcp", path, host, edge, tls; //vmess
+        std::string plugin, pluginopts, pluginopts_mode, pluginopts_host, pluginopts_mux; //ss
+        std::string protocol, protoparam, obfs, obfsparam; //ssr
+        std::string user; //socks
+
         singleproxy = yamlnode[section][i];
         singleproxy["type"] >> proxytype;
         singleproxy["name"] >> ps;
@@ -939,6 +947,8 @@ void explodeShadowrocket(std::string rocket, std::string custom_port, int local_
     rocket = rocket.substr(0, rocket.find("?"));
 
     userinfo = split(regReplace(urlsafe_base64_decode(rocket), "(.*?):(.*?)@(.*):(.*)", "$1,$2,$3,$4"), ",");
+    if(userinfo.size() != 4) // broken link
+        return;
     cipher = userinfo[0];
     id = userinfo[1];
     add = userinfo[2];
@@ -994,6 +1004,8 @@ void explodeKitsunebi(std::string kit, std::string custom_port, int local_port, 
     kit = kit.substr(0, kit.find("?"));
 
     userinfo = split(regReplace(kit, "(.*?)@(.*):(.*)", "$1,$2,$3"), ",");
+    if(userinfo.size() != 3)
+        return;
     id = userinfo[0];
     add = userinfo[1];
     if(strFind(userinfo[2], "/"))
@@ -1024,12 +1036,6 @@ void explodeKitsunebi(std::string kit, std::string custom_port, int local_port, 
 
 bool explodeSurge(std::string surge, std::string custom_port, int local_port, std::vector<nodeInfo> &nodes, bool libev)
 {
-    std::string remarks, server, port, method, username, password; //common
-    std::string plugin, pluginopts, pluginopts_mode, pluginopts_host = "cloudfront.net", mod_url, mod_md5; //ss
-    std::string id, net, tls, host, edge, path; //v2
-    std::string protocol, protoparam; //ssr
-    std::string itemName, itemVal;
-    std::vector<std::string> configs, vArray, headers, header;
     std::multimap<std::string, std::string> proxies;
     nodeInfo node;
     unsigned int i, index = nodes.size();
@@ -1044,6 +1050,7 @@ bool explodeSurge(std::string surge, std::string custom_port, int local_port, st
     ini.keep_empty_section = false;
     ini.SetIsolatedItemsSection("Proxy");
     ini.IncludeSection("Proxy");
+    ini.AddDirectSaveSection("Proxy");
     ini.Parse(surge);
 
     if(!ini.SectionExist("Proxy"))
@@ -1051,13 +1058,22 @@ bool explodeSurge(std::string surge, std::string custom_port, int local_port, st
     ini.EnterSection("Proxy");
     ini.GetItems(proxies);
 
+    const std::string proxystr = "(.*?)\\s*=\\s*(.*)";
+
     for(auto &x : proxies)
     {
-        remarks = x.first;
-        configs = split(x.second, ",");
+        std::string remarks, server, port, method, username, password; //common
+        std::string plugin, pluginopts, pluginopts_mode, pluginopts_host = "cloudfront.net", mod_url, mod_md5; //ss
+        std::string id, net, tls, host, edge, path; //v2
+        std::string protocol, protoparam; //ssr
+        std::string itemName, itemVal;
+        std::vector<std::string> configs, vArray, headers, header;
+
+        remarks = regReplace(x.second, proxystr, "$1");
+        configs = split(regReplace(x.second, proxystr, "$2"), ",");
         if(configs.size() < 2 || configs[0] == "direct")
             continue;
-        else if(configs[0] == "custom") //surge 2 style custom proxy
+        if(configs[0] == "custom") //surge 2 style custom proxy
         {
             //remove module detection to speed up parsing and compatible with broken module
             /*
@@ -1079,7 +1095,6 @@ bool explodeSurge(std::string surge, std::string custom_port, int local_port, st
                 port = custom_port.empty() ? trim(configs[2]) : custom_port;
                 method = trim(configs[3]);
                 password = trim(configs[4]);
-                plugin.clear();
 
                 for(i = 6; i < configs.size(); i++)
                 {
@@ -1096,7 +1111,7 @@ bool explodeSurge(std::string surge, std::string custom_port, int local_port, st
                     else if(itemName == "obfs-host")
                         pluginopts_host = itemVal;
                 }
-                if(plugin != "")
+                if(plugin.size())
                 {
                     pluginopts = "obfs=" + pluginopts_mode;
                     pluginopts += pluginopts_host.empty() ? "" : ";obfs-host=" + pluginopts_host;
@@ -1113,7 +1128,6 @@ bool explodeSurge(std::string surge, std::string custom_port, int local_port, st
         {
             server = trim(configs[1]);
             port = custom_port.empty() ? trim(configs[2]) : custom_port;
-            plugin.clear();
 
             for(i = 3; i < configs.size(); i++)
             {
@@ -1134,7 +1148,7 @@ bool explodeSurge(std::string surge, std::string custom_port, int local_port, st
                 else if(itemName == "obfs-host")
                     pluginopts_host = itemVal;
             }
-            if(plugin != "")
+            if(plugin.size())
             {
                 pluginopts = "obfs=" + pluginopts_mode;
                 pluginopts += pluginopts_host.empty() ? "" : ";obfs-host=" + pluginopts_host;
@@ -1189,9 +1203,9 @@ bool explodeSurge(std::string surge, std::string custom_port, int local_port, st
                     for(auto &y : headers)
                     {
                         header = split(trim(y), ":");
-                        if(header[0] == "Host")
+                        if(regMatch(header[0], "(?i)host"))
                             host = header[1];
-                        else if(header[0] == "Edge")
+                        else if(regMatch(header[0], "(?i)edge"))
                             edge = header[1];
                     }
                 }
@@ -1220,7 +1234,6 @@ bool explodeSurge(std::string surge, std::string custom_port, int local_port, st
         {
             server = trim(configs[0].substr(0, configs[0].rfind(":")));
             port = custom_port.empty() ? trim(configs[0].substr(configs[0].rfind(":") + 1)) : custom_port;
-            plugin = protocol = remarks = "";
 
             for(i = 1; i < configs.size(); i++)
             {
@@ -1249,10 +1262,11 @@ bool explodeSurge(std::string surge, std::string custom_port, int local_port, st
             }
             if(remarks.empty())
                 remarks = server + ":" + port;
-            if(plugin != "")
+            if(plugin.size())
             {
                 pluginopts = "obfs=" + pluginopts_mode;
-                pluginopts += pluginopts_host.empty() ? "" : ";obfs-host=" + pluginopts_host;
+                if(pluginopts_host.size())
+                    pluginopts += ";obfs-host=" + pluginopts_host;
             }
 
             if(protocol.size())
@@ -1272,7 +1286,6 @@ bool explodeSurge(std::string surge, std::string custom_port, int local_port, st
         {
             server = trim(configs[0].substr(0, configs[0].rfind(":")));
             port = custom_port.empty() ? trim(configs[0].substr(configs[0].rfind(":") + 1)) : custom_port;
-            plugin = protocol = remarks = "";
             net = "tcp";
 
             for(i = 1; i < configs.size(); i++)
@@ -1329,10 +1342,6 @@ void explodeSSTap(std::string sstap, std::string custom_port, int local_port, st
 {
     Document json;
     nodeInfo node;
-    std::string configType, group, remarks, server, port;
-    std::string cipher;
-    std::string user, pass;
-    std::string protocol, protoparam, obfs, obfsparam;
     unsigned int index = nodes.size();
     json.Parse(sstap.data());
     if(json.HasParseError())
@@ -1340,6 +1349,11 @@ void explodeSSTap(std::string sstap, std::string custom_port, int local_port, st
 
     for(unsigned int i = 0; i < json["configs"].Size(); i++)
     {
+        std::string configType, group, remarks, server, port;
+        std::string cipher;
+        std::string user, pass;
+        std::string protocol, protoparam, obfs, obfsparam;
+
         json["configs"][i]["group"] >> group;
         json["configs"][i]["remarks"] >> remarks;
         json["configs"][i]["server"] >> server;
@@ -1414,14 +1428,14 @@ bool chkIgnore(const nodeInfo &node, string_array &exclude_remarks, string_array
     bool excluded = false, included = false;
     //std::string remarks = UTF8ToACP(node.remarks);
     std::string remarks = node.remarks;
-    writeLog(LOG_TYPE_INFO, "Comparing exclude remarks...");
+    //writeLog(LOG_TYPE_INFO, "Comparing exclude remarks...");
     excluded = std::any_of(exclude_remarks.cbegin(), exclude_remarks.cend(), [&remarks](auto &x)
     {
         return regFind(remarks, x);
     });
     if(include_remarks.size() != 0)
     {
-        writeLog(LOG_TYPE_INFO, "Comparing include remarks...");
+        //writeLog(LOG_TYPE_INFO, "Comparing include remarks...");
         included = std::any_of(include_remarks.cbegin(), include_remarks.cend(), [&remarks](auto &x)
         {
             return regFind(remarks, x);
@@ -1573,8 +1587,9 @@ void explodeSub(std::string sub, bool sslibev, bool ssrlibev, std::string custom
 
 void filterNodes(std::vector<nodeInfo> &nodes, string_array &exclude_remarks, string_array &include_remarks, int groupID)
 {
-    int index = 0;
+    int node_index = 0;
     std::vector<nodeInfo>::iterator iter = nodes.begin();
+    /*
     while(iter != nodes.end())
     {
         if(chkIgnore(*iter, exclude_remarks, include_remarks))
@@ -1585,12 +1600,92 @@ void filterNodes(std::vector<nodeInfo> &nodes, string_array &exclude_remarks, st
         else
         {
             writeLog(LOG_TYPE_INFO, "Node  " + iter->group + " - " + iter->remarks + "  has been added.");
-            iter->id = index;
+            iter->id = node_index;
             iter->groupID = groupID;
-            ++index;
+            ++node_index;
             ++iter;
         }
     }
+    */
+
+    bool excluded = false, included = false;
+    std::vector<std::unique_ptr<pcre2_code, decltype(&pcre2_code_free)>> exclude_patterns, include_patterns;
+    std::vector<std::unique_ptr<pcre2_match_data, decltype(&pcre2_match_data_free)>> exclude_match_data, include_match_data;
+    unsigned int i = 0;
+    PCRE2_SIZE erroroffset;
+    int errornumber, rc;
+
+    for(i = 0; i < exclude_remarks.size(); i++)
+    {
+        std::unique_ptr<pcre2_code, decltype(&pcre2_code_free)> pattern(pcre2_compile(reinterpret_cast<const unsigned char*>(exclude_remarks[i].c_str()), PCRE2_ZERO_TERMINATED | PCRE2_MULTILINE, 0, &errornumber, &erroroffset, NULL), &pcre2_code_free);
+        if(!pattern)
+            return;
+        exclude_patterns.push_back(std::move(pattern));
+        pcre2_jit_compile(exclude_patterns[i].get(), 0);
+        std::unique_ptr<pcre2_match_data, decltype(&pcre2_match_data_free)> match_data(pcre2_match_data_create_from_pattern(exclude_patterns[i].get(), NULL), &pcre2_match_data_free);
+        exclude_match_data.push_back(std::move(match_data));
+    }
+    for(i = 0; i < include_remarks.size(); i++)
+    {
+        std::unique_ptr<pcre2_code, decltype(&pcre2_code_free)> pattern(pcre2_compile(reinterpret_cast<const unsigned char*>(include_remarks[i].c_str()), PCRE2_ZERO_TERMINATED | PCRE2_MULTILINE, 0, &errornumber, &erroroffset, NULL), &pcre2_code_free);
+        if(!pattern)
+            return;
+        include_patterns.push_back(std::move(pattern));
+        pcre2_jit_compile(include_patterns[i].get(), 0);
+        std::unique_ptr<pcre2_match_data, decltype(&pcre2_match_data_free)> match_data(pcre2_match_data_create_from_pattern(include_patterns[i].get(), NULL), &pcre2_match_data_free);
+        include_match_data.push_back(std::move(match_data));
+    }
+    writeLog(LOG_TYPE_INFO, "Filter started.");
+    while(iter != nodes.end())
+    {
+        excluded = false;
+        included = false;
+        for(i = 0; i < exclude_patterns.size(); i++)
+        {
+            rc = pcre2_match(exclude_patterns[i].get(), reinterpret_cast<const unsigned char*>(iter->remarks.c_str()), iter->remarks.size(), 0, 0, exclude_match_data[i].get(), NULL);
+            if (rc < 0)
+            {
+                switch(rc)
+                {
+                case PCRE2_ERROR_NOMATCH: break;
+                default: return;
+                }
+            }
+            else
+                excluded = true;
+        }
+        if(include_patterns.size() > 0)
+            for(i = 0; i < include_patterns.size(); i++)
+            {
+                rc = pcre2_match(include_patterns[i].get(), reinterpret_cast<const unsigned char*>(iter->remarks.c_str()), iter->remarks.size(), 0, 0, include_match_data[i].get(), NULL);
+                if (rc < 0)
+                {
+                    switch(rc)
+                    {
+                    case PCRE2_ERROR_NOMATCH: break;
+                    default: return;
+                    }
+                }
+                else
+                    included = true;
+            }
+        else
+            included = true;
+        if(excluded || !included)
+        {
+            writeLog(LOG_TYPE_INFO, "Node  " + iter->group + " - " + iter->remarks + "  has been ignored and will not be added.");
+            nodes.erase(iter);
+        }
+        else
+        {
+            writeLog(LOG_TYPE_INFO, "Node  " + iter->group + " - " + iter->remarks + "  has been added.");
+            iter->id = node_index;
+            iter->groupID = groupID;
+            ++node_index;
+            ++iter;
+        }
+    }
+    writeLog(LOG_TYPE_INFO, "Filter done.");
 }
 
 static inline unsigned long long streamToInt(std::string stream)
@@ -1599,17 +1694,17 @@ static inline unsigned long long streamToInt(std::string stream)
         return 0;
     double streamval = 1.0;
     if(stream.find("GB") != std::string::npos)
-        streamval = std::pow(1024, 3) * stof(stream.substr(0, stream.size() - 2));
+        streamval = std::pow(1024, 3) * to_number<float>(stream.substr(0, stream.size() - 2), 0.0);
     else if(stream.find("TB") != std::string::npos)
-        streamval = std::pow(1024, 4) * stof(stream.substr(0, stream.size() - 2));
+        streamval = std::pow(1024, 4) * to_number<float>(stream.substr(0, stream.size() - 2), 0.0);
     else if(stream.find("PB") != std::string::npos)
-        streamval = std::pow(1024, 5) * stof(stream.substr(0, stream.size() - 2));
+        streamval = std::pow(1024, 5) * to_number<float>(stream.substr(0, stream.size() - 2), 0.0);
     else if(stream.find("MB") != std::string::npos)
-        streamval = std::pow(1024, 2) * stof(stream.substr(0, stream.size() - 2));
+        streamval = std::pow(1024, 2) * to_number<float>(stream.substr(0, stream.size() - 2), 0.0);
     else if(stream.find("KB") != std::string::npos)
-        streamval = 1024.0 * stof(stream.substr(0, stream.size() - 2));
+        streamval = 1024.0 * to_number<float>(stream.substr(0, stream.size() - 2), 0.0);
     else if(stream.find("B") != std::string::npos)
-        streamval = 1.0 * stof(stream.substr(0, stream.size() - 1));
+        streamval = 1.0 * to_number<float>(stream.substr(0, stream.size() - 1), 0.0);
     return (unsigned long long)streamval;
 }
 
@@ -1620,20 +1715,35 @@ static inline double percentToDouble(std::string percent)
 
 time_t dateStringToTimestamp(std::string date)
 {
-    std::vector<std::string> date_array = split(date, ":");
-    if(date_array.size() != 6)
-        return 0;
     time_t rawtime;
-    struct tm *expire_time;
     time(&rawtime);
-    expire_time = localtime(&rawtime);
-    expire_time->tm_year = to_int(date_array[0], 1900) - 1900;
-    expire_time->tm_mon = to_int(date_array[1], 1) - 1;
-    expire_time->tm_mday = to_int(date_array[2]);
-    expire_time->tm_hour = to_int(date_array[3]);
-    expire_time->tm_min = to_int(date_array[4]);
-    expire_time->tm_sec = to_int(date_array[5]);
-    return mktime(expire_time);
+    if(startsWith(date, "left="))
+    {
+        time_t seconds_left = 0;
+        date.erase(0, 5);
+        if(endsWith(date, "d"))
+        {
+            date.erase(date.size() - 1);
+            seconds_left = to_number<double>(date, 0.0) * 86400.0;
+        }
+        return rawtime + seconds_left;
+    }
+    else
+    {
+        struct tm *expire_time;
+        std::vector<std::string> date_array = split(date, ":");
+        if(date_array.size() != 6)
+            return 0;
+
+        expire_time = localtime(&rawtime);
+        expire_time->tm_year = to_int(date_array[0], 1900) - 1900;
+        expire_time->tm_mon = to_int(date_array[1], 1) - 1;
+        expire_time->tm_mday = to_int(date_array[2]);
+        expire_time->tm_hour = to_int(date_array[3]);
+        expire_time->tm_min = to_int(date_array[4]);
+        expire_time->tm_sec = to_int(date_array[5]);
+        return mktime(expire_time);
+    }
 }
 
 bool getSubInfoFromHeader(std::string &header, std::string &result)
@@ -1654,7 +1764,7 @@ bool getSubInfoFromHeader(std::string &header, std::string &result)
 bool getSubInfoFromNodes(std::vector<nodeInfo> &nodes, string_array &stream_rules, string_array &time_rules, std::string &result)
 {
     std::string remarks, pattern, target, stream_info, time_info, retStr;
-    string_array vArray;
+    string_size spos;
 
     for(nodeInfo &x : nodes)
     {
@@ -1663,11 +1773,11 @@ bool getSubInfoFromNodes(std::vector<nodeInfo> &nodes, string_array &stream_rule
         {
             for(std::string &y : stream_rules)
             {
-                vArray = split(y, "|");
-                if(vArray.size() != 2)
+                spos = y.rfind("|");
+                if(spos == y.npos)
                     continue;
-                pattern = vArray[0];
-                target = vArray[1];
+                pattern = y.substr(0, spos);
+                target = y.substr(spos + 1);
                 if(regMatch(remarks, pattern))
                 {
                     retStr = regReplace(remarks, pattern, target);
@@ -1687,11 +1797,11 @@ bool getSubInfoFromNodes(std::vector<nodeInfo> &nodes, string_array &stream_rule
         {
             for(std::string &y : time_rules)
             {
-                vArray = split(y, "|");
-                if(vArray.size() != 2)
+                spos = y.rfind("|");
+                if(spos == y.npos)
                     continue;
-                pattern = vArray[0];
-                target = vArray[1];
+                pattern = y.substr(0, spos);
+                target = y.substr(spos + 1);
                 if(regMatch(remarks, pattern))
                 {
                     retStr = regReplace(remarks, pattern, target);
